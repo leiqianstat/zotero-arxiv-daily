@@ -19,6 +19,9 @@ T = TypeVar("T")
 DOWNLOAD_TIMEOUT = (10, 60)
 PDF_EXTRACT_TIMEOUT = 180
 TAR_EXTRACT_TIMEOUT = 180
+ARXIV_MAX_BATCH_RETRIES = 5
+ARXIV_BATCH_RETRY_DELAY = 30
+ARXIV_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 def _download_file(url: str, path: str) -> None:
@@ -133,20 +136,21 @@ class ArxivRetriever(BaseRetriever):
 
         # Get full information of each paper from arxiv api
         bar = tqdm(total=len(all_paper_ids))
-        max_batch_retries = 5
-        batch_retry_delay = 30
         for i in range(0, len(all_paper_ids), 20):
             search = arxiv.Search(id_list=all_paper_ids[i:i + 20])
-            for attempt in range(max_batch_retries):
+            for attempt in range(ARXIV_MAX_BATCH_RETRIES):
                 try:
                     batch = list(client.results(search))
                     bar.update(len(batch))
                     raw_papers.extend(batch)
                     break
                 except arxiv.HTTPError as exc:
-                    if exc.status == 429 and attempt < max_batch_retries - 1:
-                        wait = batch_retry_delay * (attempt + 1)
-                        logger.warning(f"arXiv API 429 on batch {i // 20}, retry {attempt + 1}/{max_batch_retries} in {wait}s")
+                    if exc.status in ARXIV_RETRYABLE_STATUS_CODES and attempt < ARXIV_MAX_BATCH_RETRIES - 1:
+                        wait = ARXIV_BATCH_RETRY_DELAY * (attempt + 1)
+                        logger.warning(
+                            f"arXiv API {exc.status} on batch {i // 20}, "
+                            f"retry {attempt + 1}/{ARXIV_MAX_BATCH_RETRIES} in {wait}s"
+                        )
                         sleep(wait)
                     else:
                         raise
