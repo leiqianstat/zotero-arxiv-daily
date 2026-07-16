@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import feedparser
+import pytest
 
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
 import zotero_arxiv_daily.retriever.arxiv_retriever as arxiv_retriever
@@ -61,6 +62,29 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
 
     assert len(papers) == len(new_entries)
     assert set(p.title for p in papers) == set(e.title for e in new_entries)
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_arxiv_retriever_retries_transient_api_errors(config, mock_feedparser, monkeypatch, status):
+    sleeps: list[int] = []
+
+    class FakeClient:
+        def __init__(self, **kw):
+            self.calls = 0
+
+        def results(self, search):
+            self.calls += 1
+            if self.calls == 1:
+                raise arxiv_retriever.arxiv.HTTPError("https://export.arxiv.org", 0, status)
+            return iter([])
+
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever, "sleep", sleeps.append)
+
+    retriever = ArxivRetriever(config)
+
+    assert retriever._retrieve_raw_papers() == []
+    assert sleeps == [30]
 
 
 def test_run_with_hard_timeout_returns_value():

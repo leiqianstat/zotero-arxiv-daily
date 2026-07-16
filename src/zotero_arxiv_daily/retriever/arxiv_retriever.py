@@ -9,6 +9,7 @@ from tqdm import tqdm
 import multiprocessing
 import os
 from queue import Empty
+from time import sleep
 from typing import Any, Callable, TypeVar
 from loguru import logger
 import requests
@@ -18,6 +19,9 @@ T = TypeVar("T")
 DOWNLOAD_TIMEOUT = (10, 60)
 PDF_EXTRACT_TIMEOUT = 180
 TAR_EXTRACT_TIMEOUT = 180
+ARXIV_MAX_BATCH_RETRIES = 5
+ARXIV_BATCH_RETRY_DELAY = 30
+ARXIV_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 def _download_file(url: str, path: str) -> None:
@@ -134,9 +138,24 @@ class ArxivRetriever(BaseRetriever):
         bar = tqdm(total=len(all_paper_ids))
         for i in range(0, len(all_paper_ids), 20):
             search = arxiv.Search(id_list=all_paper_ids[i:i + 20])
-            batch = list(client.results(search))
-            bar.update(len(batch))
-            raw_papers.extend(batch)
+            for attempt in range(ARXIV_MAX_BATCH_RETRIES):
+                try:
+                    batch = list(client.results(search))
+                    bar.update(len(batch))
+                    raw_papers.extend(batch)
+                    break
+                except arxiv.HTTPError as exc:
+                    if exc.status in ARXIV_RETRYABLE_STATUS_CODES and attempt < ARXIV_MAX_BATCH_RETRIES - 1:
+                        wait = ARXIV_BATCH_RETRY_DELAY * (attempt + 1)
+                        logger.warning(
+                            f"arXiv API {exc.status} on batch {i // 20}, "
+                            f"retry {attempt + 1}/{ARXIV_MAX_BATCH_RETRIES} in {wait}s"
+                        )
+                        sleep(wait)
+                    else:
+                        raise
+            if i + 20 < len(all_paper_ids):
+                sleep(3)
         bar.close()
 
         return raw_papers
