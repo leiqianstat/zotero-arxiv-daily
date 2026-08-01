@@ -2,10 +2,33 @@ name: Send emails daily
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 00 * * *'
+    # GitHub Actions schedules use UTC. These two entries cover Philadelphia
+    # daylight saving time (UTC-4) and standard time (UTC-5), respectively.
+    - cron: '30 12 * * *'
+    - cron: '30 13 * * *'
 
 jobs:
+  check-philadelphia-time:
+    runs-on: ubuntu-latest
+    outputs:
+      should-send: ${{ steps.schedule.outputs.should-send }}
+    steps:
+      - id: schedule
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || \
+            { [ "$SCHEDULE" = "30 12 * * *" ] && [ "$(TZ=America/New_York date +%z)" = "-0400" ]; } || \
+            { [ "$SCHEDULE" = "30 13 * * *" ] && [ "$(TZ=America/New_York date +%z)" = "-0500" ]; }; then
+            echo "should-send=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-send=false" >> "$GITHUB_OUTPUT"
+          fi
+
   calculate-and-send:
+    needs: check-philadelphia-time
+    if: needs.check-philadelphia-time.outputs.should-send == 'true'
     runs-on: ubuntu-latest
     env:
       HF_HOME: ${{ github.workspace }}/.cache/huggingface
